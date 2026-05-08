@@ -205,3 +205,44 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# -------------------------------------------------------------------
+# Databricks & Spark specific ignores
+# -------------------------------------------------------------------
+
+# Spark checkpoint directories
+**/_checkpoint/
+**/_checkpoints/
+**/.checkpoint/
+
+# Delta Lake transaction logs
+**/_delta_log/
+
+# Databricks notebook exports
+*.dbc
+*.html
+
+# Databricks local workspace metadata
+**/.databricks/
+**/.databricks_meta/
+
+# Databricks job run output
+**/dbfs:/FileStore/job-output/
+**/dbfs:/databricks/init/
+
+# Databricks Repos metadata (new Git folder)
+**/.repo/
+
+# Databricks MLflow artifacts
+mlruns/
+**/mlflow/
+
+# Auto-generated temp files
+**/temp/
+**/tmp/
+**/.temp/
+**/.tmp/
+
+# Python virtual envs inside Databricks Repos
+**/.venv/
+**/venv/
