@@ -30,6 +30,18 @@ dim_<entity>
 fact_<process>
 
 ### **Output**
-Delta tables stored under:
-/mnt/.../gold/dim/  
-/mnt/.../gold/fact/
+
+Unity Catalog Delta tables `<catalog>.gold.*`:
+
+| Table | Grain | Keys |
+|---|---|---|
+| `dim_date` | 1 row per calendar day (+ `-1` unknown) | `date_key` (yyyyMMdd) |
+| `dim_claim` | 1 row per claim (claimant name hashed) | `claim_sk` |
+| `dim_policy` | 1 row per policy | `policy_sk` |
+| `dim_weather` | 1 row per weather event | `weather_sk` |
+| `fact_claims` | 1 row per claim | `claim_sk`, `policy_sk`, `incident_date_key`, `reported_date_key` |
+| `fact_payments` | 1 row per payment | `claim_sk`, `policy_sk`, `payment_date_key` |
+| `fact_weather_events` | 1 row per weather event | `weather_sk`, `event_date_key` |
+| `fact_fraud_scores` | 1 row per scored claim | `claim_sk`, `policy_sk`, `incident_date_key` |
+
+Surrogate keys are `xxhash64(natural key)`, so they are stable across rebuilds.

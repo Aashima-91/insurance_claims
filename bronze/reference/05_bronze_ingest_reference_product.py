@@ -3,62 +3,28 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-raw_product_path = "file:/Workspace/Users/aashima91.gupta@gmail.com/insurance_claims/raw/reference/product_mapping.csv"
-
-
-# COMMAND ----------
-
-content = dbutils.fs.head(raw_product_path, 10000000)  # read entire file
-lines = content.split("\n")
-
-# COMMAND ----------
-
-import csv
-from io import StringIO
-
-reader = csv.DictReader(StringIO(content))
-records = [row for row in reader]
-
+# MAGIC %md
+# MAGIC # Bronze — Product mapping reference (CSV)
+# MAGIC
+# MAGIC **Reads:** `{LANDING_PATH}/reference/` files matching `product_mapping*` (new files only — Auto Loader)
+# MAGIC **Writes:** `bronze.brz_product_mapping_raw` (append-only, all columns STRING + lineage columns)
+# MAGIC
+# MAGIC Replaces the old `dbutils.fs.head()` + manual parsing, which silently cut files at 10 MB and broke on quoted commas.
 
 # COMMAND ----------
 
-from pyspark.sql.types import *
-    
-product_schema = StructType([
-    StructField("product_code", StringType(), True),
-    StructField("product_name", StringType(), True),
-    StructField("lob", StringType(), True),
-    StructField("coverage_type", StringType(), True),
-    StructField("risk_category", StringType(), True),
-    StructField("created_ts", StringType(), True),
-    StructField("updated_ts", StringType(), True)
-])
-
-df_product_raw = spark.createDataFrame(records, schema=product_schema)
+# MAGIC %run ../../configs/common/common_config
 
 # COMMAND ----------
 
-from pyspark.sql.functions import current_timestamp, monotonically_increasing_id, lit
-
-df_product_bronze = (
-    df_product_raw
-    .withColumn("bronze_ingest_ts", current_timestamp())
-    .withColumn("bronze_source_file", lit("product_mapping.csv"))
-    .withColumn("bronze_ingest_batch_id", lit("batch_001"))
+ingest_to_bronze(
+    source_folder="reference",
+    file_glob="product_mapping*",
+    file_format="csv",
+    target_table="brz_product_mapping_raw",
+    reader_options={'header': 'true'},
 )
 
-
 # COMMAND ----------
 
-spark.sql("CREATE DATABASE IF NOT EXISTS bronze")
-
-
-# COMMAND ----------
-
-df_product_bronze.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable("bronze.brz_product_mapping_raw")
-
-
-# COMMAND ----------
-
-spark.sql("SELECT * FROM bronze.brz_product_mapping_raw LIMIT 20")
-
+display(spark.table(f"{BRONZE_DB}.brz_product_mapping_raw").orderBy(F.col("bronze_ingest_ts").desc()).limit(20))

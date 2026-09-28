@@ -3,45 +3,28 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver business — payments
+# MAGIC **Reads:** `slv_payments_technical`, `slv_claims_header_business` → **Writes:** `silver.slv_payments_business`
 
 # COMMAND ----------
 
-from pyspark.sql import functions as F
+# MAGIC %run ../../../configs/common/common_config
 
-pay = spark.table(f"{SILVER_DB}.slv_payments_technical").drop(
-    "created_ts", "updated_ts", "ingestion_ts",
-    "source_file", "source_system", "source_file_name",
-    "bronze_ingest_ts", "bronze_ingest_batch_id", "bronze_source_file"
-)
+# COMMAND ----------
 
-claims = spark.table(f"{SILVER_DB}.slv_claims_header_business_v2").drop(
-    "created_ts", "updated_ts", "ingestion_ts",
-    "source_file", "source_system", "source_file_name",
-    "bronze_ingest_ts", "bronze_ingest_batch_id", "bronze_source_file"
+pay = drop_metadata(spark.table(f"{SILVER_DB}.slv_payments_technical"))
+claims = spark.table(f"{SILVER_DB}.slv_claims_header_business").select(
+    "claim_id", "policy_id", "incident_date", "reported_date"
 )
+if "policy_id" in pay.columns:          # prefer the claim's policy if payments also carry one
+    pay = pay.drop("policy_id")
 
 pay_biz = (
-    pay.alias("p")
-    .join(claims.alias("c"), "claim_id", "left")
+    pay.join(claims, "claim_id", "left")
     .withColumn("is_settlement", F.col("payment_type") == "Settlement")
     .withColumn("is_reimbursement", F.col("payment_type") == "Reimbursement")
-    .withColumn(
-        "payment_delay_days",
-        F.datediff(F.col("payment_date"), F.col("reported_date"))
-    )
+    .withColumn("payment_delay_days", F.datediff("payment_date", "reported_date"))
 )
 
-# Drop metadata from left table too
-pay_biz = pay_biz.drop(
-    "created_ts", "updated_ts", "ingestion_ts",
-    "source_file", "source_system", "source_file_name",
-    "bronze_ingest_ts", "bronze_ingest_batch_id", "bronze_source_file"
-)
-
-spark.sql("DROP TABLE IF EXISTS silver.slv_payments_business")
-
-pay_biz.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
-    f"{SILVER_DB}.slv_payments_business_v2"
-)
-
+write_table(pay_biz, SILVER_DB, "slv_payments_business")

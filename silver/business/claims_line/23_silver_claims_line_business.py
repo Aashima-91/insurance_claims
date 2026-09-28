@@ -3,50 +3,30 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver business — claims line
+# MAGIC **Reads:** `slv_claims_line_technical`, `slv_claims_header_business` → **Writes:** `silver.slv_claims_line_business`
+# MAGIC
+# MAGIC Change: only the header columns a line needs are joined (the old version copied the whole wide header onto every line).
 
 # COMMAND ----------
 
-# 32_silver_claims_line_business
+# MAGIC %run ../../../configs/common/common_config
 
-from pyspark.sql import functions as F
+# COMMAND ----------
 
-line = spark.table(f"{SILVER_DB}.slv_claims_line_technical").drop(
-    "created_ts", "updated_ts", "ingestion_ts",
-    "source_file", "source_system", "source_file_name",
-    "bronze_ingest_ts", "bronze_ingest_batch_id", "bronze_source_file"
-)
-header = spark.table(f"{SILVER_DB}.slv_claims_header_business_v2").drop(
-    "created_ts",
-    "updated_ts",
-    "ingestion_ts",
-    "source_file",
-    "source_system",
-    "source_file_name",
-    "bronze_ingest_ts",
-    "bronze_ingest_batch_id",
-    "bronze_source_file"
+line = drop_metadata(spark.table(f"{SILVER_DB}.slv_claims_line_technical"))
+header = spark.table(f"{SILVER_DB}.slv_claims_header_business").select(
+    "claim_id", "policy_id", "claim_type", "claim_status", "incident_date"
 )
 
 line_biz = (
-    line.alias("l")
-    .join(header.alias("h"), "claim_id", "left")
+    line.join(header, "claim_id", "left")
     .withColumn("is_approved", F.col("approved_amount") > 0)
     .withColumn("line_severity",
-                F.when(F.col("approved_amount") > 2000, "High")
-                 .when(F.col("approved_amount") > 500, "Medium")
+                F.when(F.col("approved_amount") > LINE_HIGH_SEVERITY, "High")
+                 .when(F.col("approved_amount") > LINE_MEDIUM_SEVERITY, "Medium")
                  .otherwise("Low"))
 )
 
-line_biz = line_biz.drop(
-    "created_ts", "updated_ts", "ingestion_ts",
-    "source_file", "source_system", "source_file_name",
-    "bronze_ingest_ts", "bronze_ingest_batch_id", "bronze_source_file"
-)
-
-spark.sql("DROP TABLE IF EXISTS silver.slv_claims_line_business")
-
-line_biz.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
-    f"{SILVER_DB}.slv_claims_line_business_v2"
-)
-
+write_table(line_biz, SILVER_DB, "slv_claims_line_business")

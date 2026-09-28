@@ -1,0 +1,245 @@
+# The whole pipeline as ONE Databricks job.
+# Tasks run in 'waves' of at most 4 so the job stays under Databricks Free Edition's limit of
+# 5 concurrent job tasks. Each wave starts when the previous wave has finished.
+# Tasks run on serverless by default (required on Free Edition); the prod target in
+# databricks.yml switches every task to a small single-node job cluster.
+resources:
+  jobs:
+    insurance_claims_pipeline:
+      name: insurance-claims-pipeline-${bundle.target}
+      max_concurrent_runs: 1
+      parameters:
+        - name: env
+          default: ${var.env}
+        - name: batch_id
+          default: "{{job.run_id}}"
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        # ---- wave 1
+        - task_key: bronze_policy
+          notebook_task:
+            notebook_path: ../bronze/policy/01_bronze_ingest_policy.py
+        - task_key: bronze_claims_header
+          notebook_task:
+            notebook_path: ../bronze/claims/02_bronze_ingest_claims_header.py
+        - task_key: bronze_claims_line
+          notebook_task:
+            notebook_path: ../bronze/claims/03_bronze_ingest_claims_line.py
+        - task_key: bronze_postcode
+          notebook_task:
+            notebook_path: ../bronze/reference/04_bronze_ingest_reference_postcode.py
+        # ---- wave 2
+        - task_key: bronze_product
+          depends_on:
+            - task_key: bronze_policy
+            - task_key: bronze_claims_header
+            - task_key: bronze_claims_line
+            - task_key: bronze_postcode
+          notebook_task:
+            notebook_path: ../bronze/reference/05_bronze_ingest_reference_product.py
+        - task_key: bronze_payments
+          depends_on:
+            - task_key: bronze_policy
+            - task_key: bronze_claims_header
+            - task_key: bronze_claims_line
+            - task_key: bronze_postcode
+          notebook_task:
+            notebook_path: ../bronze/payments/06_bronze_ingest_payments.py
+        - task_key: bronze_weather
+          depends_on:
+            - task_key: bronze_policy
+            - task_key: bronze_claims_header
+            - task_key: bronze_claims_line
+            - task_key: bronze_postcode
+          notebook_task:
+            notebook_path: ../bronze/enrichment/07_bronze_ingest_enrichment_weather.py
+        - task_key: bronze_fraud
+          depends_on:
+            - task_key: bronze_policy
+            - task_key: bronze_claims_header
+            - task_key: bronze_claims_line
+            - task_key: bronze_postcode
+          notebook_task:
+            notebook_path: ../bronze/enrichment/08_bronze_ingest_enrichment_fraud_.py
+        # ---- wave 3
+        - task_key: silver_tech_claims_header
+          depends_on:
+            - task_key: bronze_product
+            - task_key: bronze_payments
+            - task_key: bronze_weather
+            - task_key: bronze_fraud
+          notebook_task:
+            notebook_path: ../silver/technical/claim_header/11_silver_claim_header_technical.py
+        - task_key: silver_tech_claims_line
+          depends_on:
+            - task_key: bronze_product
+            - task_key: bronze_payments
+            - task_key: bronze_weather
+            - task_key: bronze_fraud
+          notebook_task:
+            notebook_path: ../silver/technical/claim_line/12_silver_claim_line_technical.py
+        - task_key: silver_tech_policy
+          depends_on:
+            - task_key: bronze_product
+            - task_key: bronze_payments
+            - task_key: bronze_weather
+            - task_key: bronze_fraud
+          notebook_task:
+            notebook_path: ../silver/technical/claim_policy/13_silver_policy_master_technical.py
+        - task_key: silver_tech_payments
+          depends_on:
+            - task_key: bronze_product
+            - task_key: bronze_payments
+            - task_key: bronze_weather
+            - task_key: bronze_fraud
+          notebook_task:
+            notebook_path: ../silver/technical/payments/14_silver_payment_technical.py
+        # ---- wave 4
+        - task_key: silver_tech_product
+          depends_on:
+            - task_key: silver_tech_claims_header
+            - task_key: silver_tech_claims_line
+            - task_key: silver_tech_policy
+            - task_key: silver_tech_payments
+          notebook_task:
+            notebook_path: ../silver/technical/product_master/15_silver_product_technical.py
+        - task_key: silver_tech_postcode
+          depends_on:
+            - task_key: silver_tech_claims_header
+            - task_key: silver_tech_claims_line
+            - task_key: silver_tech_policy
+            - task_key: silver_tech_payments
+          notebook_task:
+            notebook_path: ../silver/technical/postcode_mapping/16_silver_postcode_technical.py
+        - task_key: silver_tech_weather
+          depends_on:
+            - task_key: silver_tech_claims_header
+            - task_key: silver_tech_claims_line
+            - task_key: silver_tech_policy
+            - task_key: silver_tech_payments
+          notebook_task:
+            notebook_path: ../silver/technical/weather/17_silver_weather_technical.py
+        - task_key: silver_tech_fraud
+          depends_on:
+            - task_key: silver_tech_claims_header
+            - task_key: silver_tech_claims_line
+            - task_key: silver_tech_policy
+            - task_key: silver_tech_payments
+          notebook_task:
+            notebook_path: ../silver/technical/fraud/18_silver_fraud_scores_technical.py
+        # ---- wave 5
+        - task_key: silver_biz_policy
+          depends_on:
+            - task_key: silver_tech_product
+            - task_key: silver_tech_postcode
+            - task_key: silver_tech_weather
+            - task_key: silver_tech_fraud
+          notebook_task:
+            notebook_path: ../silver/business/policy/21_silver_policy_business.py
+        - task_key: silver_biz_claims_header
+          depends_on:
+            - task_key: silver_tech_product
+            - task_key: silver_tech_postcode
+            - task_key: silver_tech_weather
+            - task_key: silver_tech_fraud
+          notebook_task:
+            notebook_path: ../silver/business/claims_header/22_silver_claims_header_business.py
+        # ---- wave 6
+        - task_key: silver_biz_claims_line
+          depends_on:
+            - task_key: silver_biz_policy
+            - task_key: silver_biz_claims_header
+          notebook_task:
+            notebook_path: ../silver/business/claims_line/23_silver_claims_line_business.py
+        - task_key: silver_biz_payments
+          depends_on:
+            - task_key: silver_biz_policy
+            - task_key: silver_biz_claims_header
+          notebook_task:
+            notebook_path: ../silver/business/payments/24_silver_payments_business.py
+        - task_key: silver_biz_weather
+          depends_on:
+            - task_key: silver_biz_policy
+            - task_key: silver_biz_claims_header
+          notebook_task:
+            notebook_path: ../silver/business/weather/25_silver_weather_business.py
+        - task_key: silver_biz_fraud
+          depends_on:
+            - task_key: silver_biz_policy
+            - task_key: silver_biz_claims_header
+          notebook_task:
+            notebook_path: ../silver/business/fraud_scores/26_silver_fraud_scores_business.py
+        # ---- wave 7
+        - task_key: silver_validation
+          depends_on:
+            - task_key: silver_biz_claims_line
+            - task_key: silver_biz_payments
+            - task_key: silver_biz_weather
+            - task_key: silver_biz_fraud
+          notebook_task:
+            notebook_path: ../silver/validation/silver_validation_all.py
+        # ---- wave 8
+        - task_key: gold_dim_date
+          depends_on:
+            - task_key: silver_validation
+          notebook_task:
+            notebook_path: ../gold/dim/31_gold_dim_date.py
+        - task_key: gold_dim_claim
+          depends_on:
+            - task_key: silver_validation
+          notebook_task:
+            notebook_path: ../gold/dim/32_gold_dim_claim.py
+        - task_key: gold_dim_policy
+          depends_on:
+            - task_key: silver_validation
+          notebook_task:
+            notebook_path: ../gold/dim/33_gold_dim_policy.py
+        - task_key: gold_dim_weather
+          depends_on:
+            - task_key: silver_validation
+          notebook_task:
+            notebook_path: ../gold/dim/34_gold_dim_weather.py
+        # ---- wave 9
+        - task_key: gold_fact_claims
+          depends_on:
+            - task_key: gold_dim_date
+            - task_key: gold_dim_claim
+            - task_key: gold_dim_policy
+            - task_key: gold_dim_weather
+          notebook_task:
+            notebook_path: ../gold/fact/41_gold_fact_claims.py
+        - task_key: gold_fact_payments
+          depends_on:
+            - task_key: gold_dim_date
+            - task_key: gold_dim_claim
+            - task_key: gold_dim_policy
+            - task_key: gold_dim_weather
+          notebook_task:
+            notebook_path: ../gold/fact/42_gold_fact_payments.py
+        - task_key: gold_fact_weather
+          depends_on:
+            - task_key: gold_dim_date
+            - task_key: gold_dim_claim
+            - task_key: gold_dim_policy
+            - task_key: gold_dim_weather
+          notebook_task:
+            notebook_path: ../gold/fact/43_gold_fact_weather_events.py
+        - task_key: gold_fact_fraud
+          depends_on:
+            - task_key: gold_dim_date
+            - task_key: gold_dim_claim
+            - task_key: gold_dim_policy
+            - task_key: gold_dim_weather
+          notebook_task:
+            notebook_path: ../gold/fact/44_gold_fact_fraud_scores.py
+        # ---- wave 10
+        - task_key: gold_dq
+          depends_on:
+            - task_key: gold_fact_claims
+            - task_key: gold_fact_payments
+            - task_key: gold_fact_weather
+            - task_key: gold_fact_fraud
+          notebook_task:
+            notebook_path: ../gold/validation/gold_data_quality_checks.py

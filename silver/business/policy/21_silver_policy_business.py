@@ -3,52 +3,29 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver business — policy
+# MAGIC **Reads:** `slv_policy_technical`, `slv_product_mapping_technical` → **Writes:** `silver.slv_policy_business`
+# MAGIC
+# MAGIC Renamed from `slv_policy_business_v2` (the `_v2` suffix and the stray `DROP TABLE` are gone).
 
 # COMMAND ----------
 
-# 33_silver_policy_business
+# MAGIC %run ../../../configs/common/common_config
 
-from pyspark.sql import functions as F
+# COMMAND ----------
 
-policy = spark.table(f"{SILVER_DB}.slv_policy_technical").drop(
-    "created_ts", "updated_ts", "ingestion_ts",
-    "source_file", "source_system", "source_file_name",
-    "bronze_ingest_ts", "bronze_ingest_batch_id", "bronze_source_file"
-)
-product = spark.table(f"{SILVER_DB}.slv_product_mapping_technical").drop(
-    "created_ts",
-    "updated_ts",
-    "ingestion_ts",
-    "source_file",
-    "source_system",
-    "source_file_name",
-    "bronze_ingest_ts",
-    "bronze_ingest_batch_id",
-    "bronze_source_file",
-    "lob",
-    "product_name"
+policy = drop_metadata(spark.table(f"{SILVER_DB}.slv_policy_technical"))
+# lob / product_name already come from the policy file, so take only the extra attributes from product
+product = spark.table(f"{SILVER_DB}.slv_product_mapping_technical").select(
+    "product_code", "coverage_type", "risk_category"
 )
 
 policy_biz = (
-    policy.alias("p")
-    .join(product.alias("pr"), "product_code", "left")
-    .withColumn("policy_term_days",
-                F.datediff(F.col("policy_end_date"), F.col("policy_start_date")))
-    .withColumn("is_active",
-                F.current_date().between(F.col("policy_start_date"), F.col("policy_end_date")))
+    policy.join(product, "product_code", "left")
+    .withColumn("policy_term_days", F.datediff("policy_end_date", "policy_start_date"))
+    # is_active depends on the day the pipeline runs — documented as "active as of load date"
+    .withColumn("is_active", F.current_date().between(F.col("policy_start_date"), F.col("policy_end_date")))
 )
 
-# Drop metadata from left table too
-policy_biz = policy_biz.drop(
-    "created_ts", "updated_ts", "ingestion_ts",
-    "source_file", "source_system", "source_file_name",
-    "bronze_ingest_ts", "bronze_ingest_batch_id", "bronze_source_file"
-)
-
-spark.sql("DROP TABLE IF EXISTS silver.slv_policy_business")
-          
-policy_biz.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
-    f"{SILVER_DB}.slv_policy_business_v2"
-)
-
+write_table(policy_biz, SILVER_DB, "slv_policy_business")

@@ -3,62 +3,38 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver business — weather events
+# MAGIC **Reads:** `slv_weather_technical`, `slv_claims_header_technical` → **Writes:** `silver.slv_weather_business`
+# MAGIC
+# MAGIC FIX: stays at **1 row per `event_id`**. The old version left-joined events to claims, so an event with
+# MAGIC 5 claims became 5 rows and `dim_weather` / `fact_weather_events` had duplicate event_ids.
+# MAGIC The claim link now lives on the claim (`slv_claims_header_business.weather_claim_match`); here we just count.
 
 # COMMAND ----------
 
-from pyspark.sql import functions as F
+# MAGIC %run ../../../configs/common/common_config
 
-weather = spark.table(f"{SILVER_DB}.slv_weather_technical")
+# COMMAND ----------
 
-claims = (
-    spark.table(f"{SILVER_DB}.slv_claims_header_business_v2")
-    .withColumnRenamed("loss_postcode", "claim_loss_postcode")
-    .withColumnRenamed("incident_date", "claim_incident_date")
-)
+weather = drop_metadata(spark.table(f"{SILVER_DB}.slv_weather_technical"))
 
-joined = (
-    weather.alias("w")
-    .join(
-        claims.alias("c"),
-        (F.col("w.postcode") == F.col("c.claim_loss_postcode")) &
-        (F.col("w.event_date") == F.col("c.claim_incident_date")),
-        "left"
-    )
+claims_per_day = (
+    spark.table(f"{SILVER_DB}.slv_claims_header_technical")
+    .groupBy(F.col("loss_postcode").alias("c_postcode"), F.col("incident_date").alias("c_date"))
+    .agg(F.count("*").alias("matched_claim_count"))
 )
 
 weather_biz = (
-    joined.select(
-        # Weather columns
-        "w.event_id",
-        "w.event_date",
-        "w.state",
-        "w.postcode",
-        "w.weather_event",
-        "w.severity",
-        "w.temperature_c",
-        "w.rainfall_mm",
-        "w.wind_speed_kmh",
-        "w.source_file",
-        "w.source_system",
-
-        # Claim columns (renamed)
-        "c.claim_id",
-        "c.claim_loss_postcode",
-        "c.claim_incident_date",
-
-        # Derived columns
-        F.initcap(F.trim(F.col("w.severity"))).alias("severity_norm"),
-        F.col("w.severity").isin("Severe", "Extreme").alias("is_severe_weather"),
-        F.col("c.claim_id").isNotNull().alias("weather_claim_match")
-    )
+    weather
+    .join(claims_per_day,
+          (F.col("postcode") == F.col("c_postcode")) & (F.col("event_date") == F.col("c_date")),
+          "left")
+    .drop("c_postcode", "c_date")
+    .withColumn("matched_claim_count", F.coalesce("matched_claim_count", F.lit(0)))
+    .withColumn("weather_claim_match", F.col("matched_claim_count") > 0)
+    .withColumn("severity_norm", F.initcap(F.trim("severity")))
+    .withColumn("is_severe_weather", F.col("severity_norm").isin(SEVERE_WEATHER_LEVELS))
 )
 
-(
-    weather_biz.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable(f"{SILVER_DB}.slv_weather_business_v2")
-)
-
+write_table(weather_biz, SILVER_DB, "slv_weather_business")

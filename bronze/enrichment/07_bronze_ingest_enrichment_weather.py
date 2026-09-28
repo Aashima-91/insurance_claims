@@ -4,110 +4,27 @@
 # environment_version = "5"
 # ///
 # MAGIC %md
-# MAGIC ### # **RAW** Path (Weather)
+# MAGIC # Bronze — Weather events enrichment (API extract, JSON)
+# MAGIC
+# MAGIC **Reads:** `{LANDING_PATH}/api_enrichment/` files matching `weather*` (new files only — Auto Loader)
+# MAGIC **Writes:** `bronze.brz_weather_raw` (append-only, all columns STRING + lineage columns)
+# MAGIC
+# MAGIC Replaces the old `dbutils.fs.head()` + manual parsing, which silently cut files at 10 MB.
 
 # COMMAND ----------
 
-raw_weather_path = "/Workspace/Users/aashima91.gupta@gmail.com/insurance_claims/raw/api_enrichment/"
-
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### List JSON **files**
+# MAGIC %run ../../configs/common/common_config
 
 # COMMAND ----------
 
-files = dbutils.fs.ls(raw_weather_path)
-json_files = [f.path for f in files if f.name.startswith("weather")]
-json_files
-
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Load JSON content **manually**
-
-# COMMAND ----------
-
-import json
-
-all_records = []
-
-for file_path in json_files:
-    content = dbutils.fs.head(file_path, 10000000)  # up to ~10MB
-    records = json.loads(content)  # JSON array → Python list
-    for record in records:
-        record["source_file_name"] = file_path
-        all_records.append(record)
-
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Define Weather **Schema**
-
-# COMMAND ----------
-
-from pyspark.sql.types import *
-
-weather_schema = StructType([
-    StructField("event_id", StringType(), True),
-    StructField("event_date", StringType(), True),
-    StructField("postcode", IntegerType(), True),
-    StructField("state", StringType(), True),
-    StructField("weather_event", StringType(), True),
-    StructField("severity", StringType(), True),
-    StructField("temperature_c", IntegerType(), True),
-    StructField("rainfall_mm", IntegerType(), True),
-    StructField("wind_speed_kmh", IntegerType(), True),
-    StructField("created_ts", StringType(), True),
-    StructField("updated_ts", StringType(), True),
-    StructField("ingestion_ts", StringType(), True),
-    StructField("source_file", StringType(), True),
-    StructField("source_system", StringType(), True),
-    StructField("source_file_name", StringType(), True)
-])
-
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Convert Python list → Spark **DataFrame**
-
-# COMMAND ----------
-
-df_weather_raw = spark.createDataFrame(all_records, schema=weather_schema)
-
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Add Bronze **Metadata**
-
-# COMMAND ----------
-
-from pyspark.sql.functions import current_timestamp, monotonically_increasing_id, lit
-
-df_weather_bronze = (
-    df_weather_raw
-    .withColumn("bronze_ingest_ts", current_timestamp())
-    .withColumn("bronze_source_file", lit(""))   # CE cannot use input_file_name()
-    .withColumn("bronze_ingest_batch_id", lit("batch_001"))
+ingest_to_bronze(
+    source_folder="api_enrichment",
+    file_glob="weather*",
+    file_format="json",
+    target_table="brz_weather_raw",
+    reader_options={'multiLine': 'true'},
 )
 
-
 # COMMAND ----------
 
-spark.sql("CREATE DATABASE IF NOT EXISTS bronze")
-
-
-# COMMAND ----------
-
-df_weather_bronze.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable("bronze.brz_weather_raw")
-
-
-# COMMAND ----------
-
-spark.sql("SELECT * FROM bronze.brz_weather_raw LIMIT 20")
-
+display(spark.table(f"{BRONZE_DB}.brz_weather_raw").orderBy(F.col("bronze_ingest_ts").desc()).limit(20))

@@ -3,80 +3,28 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-raw_claim_line_path = "/Workspace/Users/aashima91.gupta@gmail.com/insurance_claims/raw/cloud_claims/"
-
-
-# COMMAND ----------
-
-files = dbutils.fs.ls(raw_claim_line_path)
-json_files = [f.path for f in files if f.name.startswith("claims_line")]
-json_files
-
+# MAGIC %md
+# MAGIC # Bronze — Claims line (cloud claims system, JSON array files)
+# MAGIC
+# MAGIC **Reads:** `{LANDING_PATH}/cloud_claims/` files matching `claims_line*` (new files only — Auto Loader)
+# MAGIC **Writes:** `bronze.brz_claim_line_raw` (append-only, all columns STRING + lineage columns)
+# MAGIC
+# MAGIC Replaces the old `dbutils.fs.head()` + manual parsing, which silently cut files at 10 MB and dropped `source_file_name` (it was not in the schema).
 
 # COMMAND ----------
 
-import json
-
-all_records = []
-
-for file_path in json_files:
-    content = dbutils.fs.head(file_path, 10000000)  # up to ~10MB
-    records = json.loads(content)  # JSON array → Python list
-    for record in records:
-        record["source_file_name"] = file_path
-        all_records.append(record)
-
+# MAGIC %run ../../configs/common/common_config
 
 # COMMAND ----------
 
-from pyspark.sql.types import *
-
-claims_line_schema = StructType([
-    StructField("claim_line_id", StringType(), True),
-    StructField("claim_id", StringType(), True),
-    StructField("coverage_code", StringType(), True),
-    StructField("coverage_desc", StringType(), True),
-    StructField("item_type", StringType(), True),
-    StructField("claimed_amount", IntegerType(), True),
-    StructField("approved_amount", IntegerType(), True),
-    StructField("deductible_amount", IntegerType(), True),
-    StructField("line_status", StringType(), True),
-    StructField("created_ts", StringType(), True),
-    StructField("updated_ts", StringType(), True),
-    StructField("ingestion_ts", StringType(), True),
-    StructField("source_file", StringType(), True),
-    StructField("source_system", StringType(), True)
-])
-
-
-# COMMAND ----------
-
-df_claim_line_raw = spark.createDataFrame(all_records, schema=claims_line_schema)
-
-
-# COMMAND ----------
-
-from pyspark.sql.functions import current_timestamp, monotonically_increasing_id, lit
-
-df_claim_line_bronze = (
-    df_claim_line_raw
-    .withColumn("bronze_ingest_ts", current_timestamp())
-    .withColumn("bronze_source_file", lit(""))   # CE cannot use input_file_name()
-    .withColumn("bronze_ingest_batch_id", lit("batch_001"))
+ingest_to_bronze(
+    source_folder="cloud_claims",
+    file_glob="claims_line*",
+    file_format="json",
+    target_table="brz_claim_line_raw",
+    reader_options={'multiLine': 'true'},
 )
 
-
 # COMMAND ----------
 
-spark.sql("CREATE DATABASE IF NOT EXISTS bronze")
-
-
-# COMMAND ----------
-
-# DBTITLE 1,Cell 8
-df_claim_line_bronze.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable("bronze.brz_claim_line_raw")
-
-# COMMAND ----------
-
-spark.sql("SELECT * FROM bronze.brz_claim_line_raw LIMIT 20")
-
+display(spark.table(f"{BRONZE_DB}.brz_claim_line_raw").orderBy(F.col("bronze_ingest_ts").desc()).limit(20))

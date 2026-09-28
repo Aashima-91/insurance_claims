@@ -41,5 +41,17 @@ Handles:
 
 ### **Output**
 
-Delta tables stored under:
-/mnt/.../silver/<domain>/<entity>
+Unity Catalog Delta tables `<catalog>.silver.*`:
+
+| Technical (typed, trimmed, deduplicated) | Business (joined + derived) |
+|---|---|
+| `slv_claims_header_technical` | `slv_claims_header_business` (incl. postcode region + weather match) |
+| `slv_claims_line_technical` | `slv_claims_line_business` |
+| `slv_policy_technical` | `slv_policy_business` |
+| `slv_payments_technical` | `slv_payments_business` |
+| `slv_product_mapping_technical` | — |
+| `slv_postcode_region_technical` | — |
+| `slv_weather_technical` | `slv_weather_business` (1 row per event) |
+| `slv_fraud_scores_technical` | `slv_fraud_scores_business` |
+
+`validation/silver_validation_all` fails the run on `error` checks (grain, row counts) and reports `warn` checks.
