@@ -13,7 +13,7 @@
 
 # COMMAND ----------
 
-bronze_weather = spark.table(f"{BRONZE_DB}.brz_weather_raw")
+bronze_weather = ensure_columns(spark.table(f"{BRONZE_DB}.brz_weather_raw"))
 
 silver_weather_tech = (
     trim_all_strings(bronze_weather)

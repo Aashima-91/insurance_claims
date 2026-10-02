@@ -89,7 +89,17 @@ def drop_metadata(df: DataFrame, extra: list = None) -> DataFrame:
     """Drop lineage/technical columns (replaces the 9-column drop list copied into every notebook)."""
     return df.drop(*(METADATA_COLS + (extra or [])))
 
+SOURCE_AUDIT_COLS = ["created_ts", "updated_ts", "ingestion_ts", "source_file", "source_system"]
 
+
+def ensure_columns(df: DataFrame, cols: list = None) -> DataFrame:
+    """Add expected columns the source files don't contain, as NULL strings."""
+    for c in (cols or SOURCE_AUDIT_COLS):
+        if c not in df.columns:
+            print(f"note: column `{c}` not in source files — added as NULL")
+            df = df.withColumn(c, F.lit(None).cast("string"))
+    return df
+    
 def trim_all_strings(df: DataFrame) -> DataFrame:
     """Trim every string column; turn empty strings into NULL."""
     for field in df.schema.fields:

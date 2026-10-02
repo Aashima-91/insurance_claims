@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-bronze_pay = spark.table(f"{BRONZE_DB}.brz_payments_raw")
+bronze_pay = ensure_columns(spark.table(f"{BRONZE_DB}.brz_payments_raw"), ["created_ts", "updated_ts", "source_file", "source_system"])
 
 silver_pay_tech = (
     trim_all_strings(bronze_pay)

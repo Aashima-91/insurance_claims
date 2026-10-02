@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-bronze_hdr = spark.table(f"{BRONZE_DB}.brz_claim_header_raw")
+bronze_hdr = ensure_columns(spark.table(f"{BRONZE_DB}.brz_claim_header_raw"))
 
 silver_hdr_tech = (
     trim_all_strings(bronze_hdr)

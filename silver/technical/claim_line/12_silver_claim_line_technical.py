@@ -13,7 +13,7 @@
 
 # COMMAND ----------
 
-bronze_line = spark.table(f"{BRONZE_DB}.brz_claim_line_raw")
+bronze_line = ensure_columns(spark.table(f"{BRONZE_DB}.brz_claim_line_raw"))
 
 silver_line_tech = (
     trim_all_strings(bronze_line)

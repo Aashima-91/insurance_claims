@@ -15,7 +15,7 @@
 
 # COMMAND ----------
 
-df = spark.table(f"{BRONZE_DB}.brz_fraud_scores_raw")
+df = ensure_columns(spark.table(f"{BRONZE_DB}.brz_fraud_scores_raw"), SOURCE_AUDIT_COLS + ["risk_category", "flags"])
 
 fraud_tech = (
     trim_all_strings(df)

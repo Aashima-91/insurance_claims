@@ -15,7 +15,7 @@
 
 # COMMAND ----------
 
-bronze_pol = spark.table(f"{BRONZE_DB}.brz_policy_master_raw")
+bronze_pol = ensure_columns(spark.table(f"{BRONZE_DB}.brz_policy_master_raw"))
 
 silver_pol_tech = (
     trim_all_strings(bronze_pol)
