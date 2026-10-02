@@ -3,30 +3,28 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver technical — postcode → region (reference)
+# MAGIC **Reads:** `bronze.brz_postcode_region_raw` → **Writes:** `silver.slv_postcode_region_technical`
+# MAGIC (1 row per `postcode` + `state`)
+# MAGIC
+# MAGIC Fix: postcode is a 4-char string (was INT → NT postcodes like 0800 lost the leading zero).
+
+# COMMAND ----------
+
+# MAGIC %run ../../../configs/common/common_config
 
 # COMMAND ----------
 
 bronze_pc = spark.table(f"{BRONZE_DB}.brz_postcode_region_raw")
 
 silver_pc_tech = (
-    bronze_pc
-    .withColumn("postcode", F.col("postcode").cast("int"))
-    .withColumn("suburb", F.trim("suburb"))
-    .withColumn("state", F.trim("state"))
-    .withColumn("region", F.trim("region"))
-    .withColumn("risk_zone", F.trim("risk_zone"))
-    .withColumn("created_ts", F.to_timestamp("created_ts"))
-    .withColumn("updated_ts", F.to_timestamp("updated_ts"))
-    .withColumn("ingestion_ts", F.to_timestamp("bronze_ingest_ts"))
+    trim_all_strings(bronze_pc)
+    .withColumn("postcode", to_postcode("postcode"))
+    .withColumn("ingestion_ts", F.col("bronze_ingest_ts"))
     .filter(F.col("postcode").isNotNull())
 )
 
-(
-    silver_pc_tech.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable(f"{SILVER_DB}.slv_postcode_region_technical")
-)
+silver_pc_tech = dedupe_latest(silver_pc_tech, ["postcode", "state"], ["bronze_ingest_ts"])
 
+write_table(silver_pc_tech, SILVER_DB, "slv_postcode_region_technical")

@@ -3,27 +3,26 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
+# MAGIC %md
+# MAGIC # Gold — fact_fraud_scores (grain: 1 row per scored claim)
+
+# COMMAND ----------
+
+# MAGIC %run ../../configs/common/common_config
+
+# COMMAND ----------
+
 # MAGIC %sql
 # MAGIC CREATE OR REPLACE TABLE gold.fact_fraud_scores AS
 # MAGIC SELECT
-# MAGIC     -- Fraud identifiers
+# MAGIC     xxhash64(f.claim_id)                                             AS claim_sk,
+# MAGIC     CASE WHEN f.policy_id IS NOT NULL THEN xxhash64(f.policy_id) END AS policy_sk,
+# MAGIC     COALESCE(CAST(date_format(f.incident_date, 'yyyyMMdd') AS INT), -1)      AS incident_date_key,
 # MAGIC     f.claim_id,
 # MAGIC     f.fraud_score,
-# MAGIC     f.risk_category,
-# MAGIC     f.flags_str,
 # MAGIC     f.fraud_severity,
 # MAGIC     f.fraud_flag,
-# MAGIC
-# MAGIC     -- Claim context (1:1 join)
-# MAGIC     c.claim_number,
-# MAGIC     c.claim_type,
-# MAGIC     c.incident_date,
-# MAGIC     c.reported_date,
-# MAGIC     c.estimated_loss_amount,
-# MAGIC     c.is_large_claim,
-# MAGIC     c.policy_id
-# MAGIC
-# MAGIC FROM silver.slv_fraud_scores_business_v2 f
-# MAGIC LEFT JOIN silver.slv_claims_header_business_v2 c
-# MAGIC     ON f.claim_id = c.claim_id;
-# MAGIC
+# MAGIC     f.risk_category              AS fraud_risk_category,
+# MAGIC     f.flags_str                  AS fraud_flags,
+# MAGIC     current_timestamp()          AS gold_load_ts
+# MAGIC FROM silver.slv_fraud_scores_business f;

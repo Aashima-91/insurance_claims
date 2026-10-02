@@ -41,5 +41,9 @@ Examples:
 
 ### **Output**
 
-Delta tables stored under:
-/mnt/.../bronze/<domain>/<entity>    
+Unity Catalog Delta tables `<catalog>.bronze.brz_*_raw` (catalog `workspace` on Free Edition, `insurance` on Azure,
+where the data physically sits in the ADLS `lakehouse` container).
+
+Input files are read from the volume `/Volumes/<catalog>/raw/landing/<source folder>/` with **Auto Loader**
+(`ingest_to_bronze()` in `configs/common/common_config.py`): only new files are read, all columns land as STRING, and
+each row carries `bronze_source_file`, `bronze_ingest_ts` and `bronze_ingest_batch_id` (the job run id).

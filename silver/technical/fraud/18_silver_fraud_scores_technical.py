@@ -3,31 +3,31 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver technical — fraud scores
+# MAGIC **Reads:** `bronze.brz_fraud_scores_raw` → **Writes:** `silver.slv_fraud_scores_technical` (1 row per `claim_id`)
+# MAGIC
+# MAGIC Fix: dedup — a claim re-scored in a later file used to create 2 rows and double the claim in `fact_claims`.
 
 # COMMAND ----------
 
-from pyspark.sql import functions as F
+# MAGIC %run ../../../configs/common/common_config
 
-df = spark.table(f"{BRONZE_DB}.brz_fraud_scores_raw")
+# COMMAND ----------
+
+df = ensure_columns(spark.table(f"{BRONZE_DB}.brz_fraud_scores_raw"), SOURCE_AUDIT_COLS + ["risk_category", "flags"])
 
 fraud_tech = (
-    df.select(
-        "claim_id",
-        F.col("fraud_score").cast("double"),
-        "risk_category",
-        "flags",
-        "source_file",
-        "source_system"
-    )
+    trim_all_strings(df)
+    .withColumn("fraud_score", to_double("fraud_score"))
+    .withColumn("created_ts", to_ts_safe("created_ts"))
+    .withColumn("updated_ts", to_ts_safe("updated_ts"))
+    .filter(F.col("claim_id").isNotNull())
+    .select("claim_id", "fraud_score", "risk_category", "flags",
+            "created_ts", "updated_ts", "source_file", "source_system",
+            "bronze_source_file", "bronze_ingest_ts", "bronze_ingest_batch_id")
 )
 
-fraud_tech.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
-    f"{SILVER_DB}.slv_fraud_scores_technical"
-)
+fraud_tech = dedupe_latest(fraud_tech, ["claim_id"])
 
-
-# COMMAND ----------
-
-# spark.table(f"{SILVER_DB}.slv_fraud_scores_technical").columns
-
+write_table(fraud_tech, SILVER_DB, "slv_fraud_scores_technical")

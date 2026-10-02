@@ -3,383 +3,90 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# DB names
-GOLD_DB = "gold"
-SILVER_DB = "silver"
-
-print(f"Using GOLD_DB = {GOLD_DB}, SILVER_DB = {SILVER_DB}")
-
-
-# COMMAND ----------
-
-from pyspark.sql import DataFrame
-
-def run_check(name: str, query: str):
-    print(f"\n=== CHECK: {name} ===")
-    print(f"SQL:\n{query}\n")
-    df: DataFrame = spark.sql(query)
-    count = df.count()
-    if count == 0:
-        print(f"RESULT: ✅ PASSED (0 rows returned)\n")
-    else:
-        print(f"RESULT: ❌ FAILED ({count} rows returned)\n")
-        df.show(min(count, 50), truncate=False)
-
-
-# COMMAND ----------
-
 # MAGIC %md
-# MAGIC ## **DIM Checks**
+# MAGIC # Gold data-quality checks
+# MAGIC
+# MAGIC Fixes vs old version:
+# MAGIC - `fraud_score` range is `0..FRAUD_SCORE_MAX` (100) — the old check used `0..1`, which contradicts the silver
+# MAGIC   thresholds (60 / 30) and failed for every scored claim.
+# MAGIC - Boolean flags are checked as booleans (the old `NOT IN ('Y','N')` only passed because Spark casts 'Y' to TRUE).
+# MAGIC - FK checks use the new surrogate keys, including every date key → `dim_date`.
+# MAGIC - Failures of `error` checks **raise**, so the job run is marked failed.
 
 # COMMAND ----------
 
-run_check(
-    "dim_date – duplicate date_key",
-    f"""
-    SELECT date_key, COUNT(*) AS cnt
-    FROM {GOLD_DB}.dim_date
-    GROUP BY date_key
-    HAVING COUNT(*) > 1
-    """
-)
-
-run_check(
-    "dim_date – null date_key or date",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_date
-    WHERE date_key IS NULL OR date IS NULL
-    """
-)
-
+# MAGIC %run ../../configs/common/common_config
 
 # COMMAND ----------
 
-run_check(
-    "dim_policy – duplicate policy_id",
-    f"""
-    SELECT policy_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.dim_policy
-    GROUP BY policy_id
-    HAVING COUNT(*) > 1
-    """
-)
+G = GOLD_DB
+dq = DQ("gold")
 
-run_check(
-    "dim_policy – null policy_id or policy_number",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_policy
-    WHERE policy_id IS NULL OR policy_number IS NULL
-    """
-)
+# ---------------- Dimensions: unique keys ----------------
+for table, key in [("dim_date", "date_key"), ("dim_claim", "claim_sk"), ("dim_claim", "claim_id"),
+                   ("dim_policy", "policy_sk"), ("dim_policy", "policy_id"),
+                   ("dim_weather", "weather_sk"), ("dim_weather", "event_id")]:
+    dq.check(f"{table}: duplicate {key}",
+             f"SELECT {key}, COUNT(*) cnt FROM {G}.{table} GROUP BY {key} HAVING COUNT(*) > 1")
 
-run_check(
-    "dim_policy – invalid dates (start > end)",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_policy
-    WHERE policy_start_date IS NOT NULL
-      AND policy_end_date   IS NOT NULL
-      AND policy_start_date > policy_end_date
-    """
-)
+dq.check("dim_date: null date on a real (non -1) row",
+         f"SELECT * FROM {G}.dim_date WHERE date_key <> -1 AND date IS NULL")
+dq.check("dim_date: gaps in calendar",
+         f"""SELECT MIN(date) mn, MAX(date) mx, COUNT(*) n FROM {G}.dim_date WHERE date_key <> -1
+             HAVING datediff(MAX(date), MIN(date)) + 1 <> COUNT(*)""")
+dq.check("dim_policy: start date after end date",
+         f"SELECT policy_id FROM {G}.dim_policy WHERE policy_start_date > policy_end_date", level="warn")
+dq.check("dim_policy: negative premium_amount",
+         f"SELECT policy_id, premium_amount FROM {G}.dim_policy WHERE premium_amount < 0", level="warn")
 
-run_check(
-    "dim_policy – negative premium_amount",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_policy
-    WHERE premium_amount < 0
-    """
-)
+# ---------------- Facts: grain ----------------
+for table, key in [("fact_claims", "claim_sk"), ("fact_payments", "payment_id"),
+                   ("fact_weather_events", "weather_sk"), ("fact_fraud_scores", "claim_sk")]:
+    dq.check(f"{table}: grain violated (duplicate {key})",
+             f"SELECT {key}, COUNT(*) cnt FROM {G}.{table} GROUP BY {key} HAVING COUNT(*) > 1")
 
+# ---------------- Facts: foreign keys ----------------
+fks = [
+    ("fact_claims",         "claim_sk",          "dim_claim",   "claim_sk",   "error"),
+    ("fact_claims",         "policy_sk",         "dim_policy",  "policy_sk",  "warn"),
+    ("fact_claims",         "incident_date_key", "dim_date",    "date_key",   "error"),
+    ("fact_claims",         "reported_date_key", "dim_date",    "date_key",   "error"),
+    ("fact_payments",       "claim_sk",          "dim_claim",   "claim_sk",   "warn"),
+    ("fact_payments",       "payment_date_key",  "dim_date",    "date_key",   "error"),
+    ("fact_weather_events", "weather_sk",        "dim_weather", "weather_sk", "error"),
+    ("fact_weather_events", "event_date_key",    "dim_date",    "date_key",   "error"),
+    ("fact_fraud_scores",   "claim_sk",          "dim_claim",   "claim_sk",   "warn"),
+]
+for fact, fk, dim, pk, level in fks:
+    dq.check(f"{fact}.{fk} not found in {dim}",
+             f"""SELECT f.{fk}, COUNT(*) cnt FROM {G}.{fact} f
+                 LEFT ANTI JOIN {G}.{dim} d ON f.{fk} = d.{pk}
+                 WHERE f.{fk} IS NOT NULL GROUP BY f.{fk}""", level=level)
 
-# COMMAND ----------
+# ---------------- Facts: business rules ----------------
+dq.check("fact_claims: negative estimated_loss_amount",
+         f"SELECT claim_id, estimated_loss_amount FROM {G}.fact_claims WHERE estimated_loss_amount < 0", level="warn")
+dq.check("fact_claims: approved more than claimed",
+         f"SELECT claim_id, total_claimed_amount, total_approved_amount FROM {G}.fact_claims WHERE total_approved_amount > total_claimed_amount", level="warn")
+dq.check("fact_payments: negative payment_amount",
+         f"SELECT payment_id, payment_amount FROM {G}.fact_payments WHERE payment_amount < 0", level="warn")
+dq.check(f"fact_fraud_scores: fraud_score outside 0..{FRAUD_SCORE_MAX}",
+         f"SELECT claim_id, fraud_score FROM {G}.fact_fraud_scores WHERE fraud_score < 0 OR fraud_score > {FRAUD_SCORE_MAX}")
+dq.check("fact_fraud_scores: fraud_flag inconsistent with score",
+         f"""SELECT claim_id, fraud_score, fraud_flag FROM {G}.fact_fraud_scores
+             WHERE fraud_flag <> (fraud_score >= {FRAUD_HIGH_THRESHOLD})""")
+dq.check("dim_weather: is_severe_weather inconsistent with severity",
+         f"""SELECT event_id, severity, is_severe_weather FROM {G}.dim_weather
+             WHERE is_severe_weather <> (severity IN ({", ".join(f"'{v}'" for v in SEVERE_WEATHER_LEVELS)}))""")
 
-run_check(
-    "dim_claim – duplicate claim_id",
-    f"""
-    SELECT claim_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.dim_claim
-    GROUP BY claim_id
-    HAVING COUNT(*) > 1
-    """
-)
-
-run_check(
-    "dim_claim – null claim_id or claim_number",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_claim
-    WHERE claim_id IS NULL OR claim_number IS NULL
-    """
-)
-
-run_check(
-    "dim_claim – incident_date after reported_date",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_claim
-    WHERE incident_date IS NOT NULL
-      AND reported_date IS NOT NULL
-      AND incident_date > reported_date
-    """
-)
-
-run_check(
-    "dim_claim – negative estimated_loss_amount",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_claim
-    WHERE estimated_loss_amount < 0
-    """
-)
-
+# ---------------- Reconciliation: gold must match silver ----------------
+dq.check("fact_claims row count = silver claims header",
+         f"""SELECT * FROM (SELECT COUNT(*) n FROM {G}.fact_claims) g, (SELECT COUNT(*) n FROM {SILVER_DB}.slv_claims_header_business) s
+             WHERE g.n <> s.n""")
+dq.check("fact_payments total = silver payments total",
+         f"""SELECT * FROM (SELECT SUM(payment_amount) a FROM {G}.fact_payments) g, (SELECT SUM(payment_amount) a FROM {SILVER_DB}.slv_payments_business) s
+             WHERE g.a <> s.a""")
 
 # COMMAND ----------
 
-# 1) Duplicate event_id
-run_check(
-    "dim_weather – duplicate event_id",
-    f"""
-    SELECT event_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.dim_weather
-    GROUP BY event_id
-    HAVING COUNT(*) > 1
-    """
-)
-
-# 2) Null key/date
-run_check(
-    "dim_weather – null event_id or event_date",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_weather
-    WHERE event_id IS NULL OR event_date IS NULL
-    """
-)
-
-# 3) Invalid severity category (assuming your expected set)
-run_check(
-    "dim_weather – invalid severity value",
-    f"""
-    SELECT DISTINCT severity
-    FROM {GOLD_DB}.dim_weather
-    WHERE severity IS NOT NULL
-      AND severity NOT IN ('Severe', 'Moderate', 'Minor', 'Extreme')
-    """
-)
-
-# 4) Invalid severity_norm (if it’s just a normalized label, same domain)
-run_check(
-    "dim_weather – invalid severity_norm value",
-    f"""
-    SELECT DISTINCT severity_norm
-    FROM {GOLD_DB}.dim_weather
-    WHERE severity_norm IS NOT NULL
-      AND severity_norm NOT IN ('Severe', 'Moderate', 'Minor', 'Extreme')
-    """
-)
-
-# 5) is_severe_weather should be Y/N or true/false depending on your design
-run_check(
-    "dim_weather – invalid is_severe_weather flag",
-    f"""
-    SELECT DISTINCT is_severe_weather
-    FROM {GOLD_DB}.dim_weather
-    WHERE is_severe_weather IS NOT NULL
-      AND is_severe_weather NOT IN ('Y','N')
-    """
-)
-
-
-# COMMAND ----------
-
-run_check(
-    "dim_fraud – duplicate claim_id",
-    f"""
-    SELECT claim_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.dim_fraud
-    GROUP BY claim_id
-    HAVING COUNT(*) > 1
-    """
-)
-
-run_check(
-    "dim_fraud – fraud_score outside [0,1]",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_fraud
-    WHERE fraud_score IS NOT NULL
-      AND (fraud_score < 0 OR fraud_score > 1)
-    """
-)
-
-run_check(
-    "dim_fraud – invalid fraud_flag",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.dim_fraud
-    WHERE fraud_flag IS NOT NULL
-      AND fraud_flag NOT IN ('Y','N')
-    """
-)
-
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## **FACT Checks**
-
-# COMMAND ----------
-
-run_check(
-    "fact_claims – duplicate claim_id (grain check)",
-    f"""
-    SELECT claim_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.fact_claims
-    GROUP BY claim_id
-    HAVING COUNT(*) > 1
-    """
-)
-
-run_check(
-    "fact_claims – FK claim_id not in dim_claim",
-    f"""
-    SELECT f.*
-    FROM {GOLD_DB}.fact_claims f
-    LEFT JOIN {GOLD_DB}.dim_claim d
-      ON f.claim_id = d.claim_id
-    WHERE f.claim_id IS NOT NULL
-      AND d.claim_id IS NULL
-    """
-)
-
-run_check(
-    "fact_claims – FK policy_id not in dim_policy",
-    f"""
-    SELECT f.*
-    FROM {GOLD_DB}.fact_claims f
-    LEFT JOIN {GOLD_DB}.dim_policy p
-      ON f.policy_id = p.policy_id
-    WHERE f.policy_id IS NOT NULL
-      AND p.policy_id IS NULL
-    """
-)
-
-run_check(
-    "fact_claims – negative loss amounts",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.fact_claims
-    WHERE estimated_loss_amount < 0
-    """
-)
-
-
-# COMMAND ----------
-
-run_check(
-    "fact_payments – duplicate payment_id (grain check)",
-    f"""
-    SELECT payment_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.fact_payments
-    GROUP BY payment_id
-    HAVING COUNT(*) > 1
-    """
-)
-
-run_check(
-    "fact_payments – FK claim_id not in dim_claim",
-    f"""
-    SELECT f.*
-    FROM {GOLD_DB}.fact_payments f
-    LEFT JOIN {GOLD_DB}.dim_claim d
-      ON f.claim_id = d.claim_id
-    WHERE f.claim_id IS NOT NULL
-      AND d.claim_id IS NULL
-    """
-)
-
-run_check(
-    "fact_payments – negative payment_amount",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.fact_payments
-    WHERE payment_amount < 0
-    """
-)
-
-
-# COMMAND ----------
-
-run_check(
-    "fact_weather_events – duplicate event_id (grain check)",
-    f"""
-    SELECT event_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.fact_weather_events
-    GROUP BY event_id
-    HAVING COUNT(*) > 1
-    """
-)
-
-run_check(
-    "fact_weather_events – FK event_id not in dim_weather",
-    f"""
-    SELECT f.*
-    FROM {GOLD_DB}.fact_weather_events f
-    LEFT JOIN {GOLD_DB}.dim_weather d
-      ON f.event_id = d.event_id
-    WHERE f.event_id IS NOT NULL
-      AND d.event_id IS NULL
-    """
-)
-
-run_check(
-    "fact_weather_events – FK claim_id not in dim_claim",
-    f"""
-    SELECT f.*
-    FROM {GOLD_DB}.fact_weather_events f
-    LEFT JOIN {GOLD_DB}.dim_claim d
-      ON f.claim_id = d.claim_id
-    WHERE f.claim_id IS NOT NULL
-      AND d.claim_id IS NULL
-    """
-)
-
-
-# COMMAND ----------
-
-run_check(
-    "fact_fraud_scores – duplicate claim_id (grain check)",
-    f"""
-    SELECT claim_id, COUNT(*) AS cnt
-    FROM {GOLD_DB}.fact_fraud_scores
-    GROUP BY claim_id
-    HAVING COUNT(*) > 1
-    """
-)
-
-run_check(
-    "fact_fraud_scores – FK claim_id not in dim_claim",
-    f"""
-    SELECT f.*
-    FROM {GOLD_DB}.fact_fraud_scores f
-    LEFT JOIN {GOLD_DB}.dim_claim d
-      ON f.claim_id = d.claim_id
-    WHERE f.claim_id IS NOT NULL
-      AND d.claim_id IS NULL
-    """
-)
-
-run_check(
-    "fact_fraud_scores – fraud_score outside [0,1]",
-    f"""
-    SELECT *
-    FROM {GOLD_DB}.fact_fraud_scores
-    WHERE fraud_score IS NOT NULL
-      AND (fraud_score < 0 OR fraud_score > 1)
-    """
-)
-
+dq.raise_if_failed()

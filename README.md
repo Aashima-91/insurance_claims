@@ -1,127 +1,81 @@
-# Insurance Claims Analytics Lakehouse  
-A production‑grade, end‑to‑end **Medallion Architecture** built on Databricks to process, enrich, validate, and model insurance claims data for analytics, reporting, and fraud detection.
+# Insurance Claims Analytics Lakehouse
+An end-to-end **Medallion Architecture** on Databricks + Azure that ingests, enriches, validates and models insurance claims data for analytics, reporting and fraud detection.
+
+The same code runs in two environments:
+
+| | dev | prod |
+|---|---|---|
+| Platform | Databricks **Free Edition** | **Azure Databricks** (Premium, Unity Catalog) |
+| Catalog | `workspace` | `insurance` (stored on ADLS Gen2) |
+| Files arrive in | volume `workspace.raw.landing` (manual upload) | ADLS `landing` container, landed by **Azure Data Factory** |
+| Compute | serverless | single-node job cluster |
 
 ---
 
-## 🚀 **1. Project Overview**
-This project demonstrates a full **enterprise data engineering pipeline** using Databricks:
+## 1. Architecture
 
-- Ingest raw insurance data (claims, policy, payments, reference)
-- Enrich with external datasets (weather, fraud signals)
-- Apply technical + business transformations
-- Build dimensional models and fact tables
-- Run data quality checks across layers
-- Prepare analytics‑ready datasets for BI and ML
+```
+Source systems                Azure Data Factory              Databricks (Unity Catalog)                          Consumers
+────────────────              ──────────────────              ─────────────────────────────────────────           ─────────
+claims (JSON)     ─┐                                           BRONZE  Auto Loader, append-only, all-string
+policy (CSV)      ─┤  Copy → ADLS landing/<src>/yyyy/MM/dd ──►  SILVER  technical: typed, trimmed, deduplicated     Power BI
+payments (CSV)    ─┤  then Databricks Job activity                      business: joins, weather match, fraud bands  SQL
+reference (CSV)   ─┤                                           GOLD    star schema: dim_* / fact_* (surrogate keys)  ML
+weather, fraud    ─┘                                           DQ      silver + gold checks fail the run on errors
+```
 
-It is designed to reflect **real‑world insurance data platforms** used in BFSI organizations.
+Orchestration: one Databricks job with 32 dependent tasks, defined as code in `databricks.yml` (Asset Bundle),
+triggered by ADF on Azure. CI/CD: GitHub Actions deploys the bundle.
 
----
+## 2. Business domains
+Claims (header + line) · Policy · Payments · Reference (postcode→region, product) · Weather enrichment · Fraud enrichment.
 
-## 🧱 **2. Architecture Summary**
-This project follows the **Medallion Architecture**:
+## 3. Key features
+- **Incremental ingestion** with Auto Loader: only new files, real file lineage (`_metadata.file_path`), batch id = job run id
+- **Technical vs business** separation in silver; deduplication to the latest version of each record
+- **Weather ↔ claim matching** on postcode + incident date, without duplicating either side
+- **Star schema** with stable surrogate keys (`xxhash64`), continuous `dim_date` (incl. Australian financial year), PII hashed
+- **Data quality framework**: `DQ` helper; `error` checks fail the job, `warn` checks are reported
+- **One config** (`configs/common/common_config.py`) switches dev/prod via an `env` parameter
 
-- **Bronze** → Raw ingestion  
-- **Silver** → Cleansed, conformed, enriched  
-- **Gold** → Dimensional models + fact tables  
-
-Each layer is modular, domain‑driven, and production‑ready.
-
-If you want to explore any layer in detail:  
-- Bronze Layer  
-- Silver Layer  
-- Gold Layer
-
----
-
-## 📊 **3. Business Domains Covered**
-This Lakehouse processes multiple insurance domains:
-
-- **Claims** — header + line level  
-- **Policy** — customer, coverage, premiums  
-- **Payments** — settlement transactions  
-- **Reference Data** — postcode, product mapping  
-- **Weather Enrichment** — event severity, matching  
-- **Fraud Enrichment** — fraud scores, flags  
-
-This makes the project **multi‑domain**, **cross‑functional**, and **interview‑ready**.
-
----
-
-## 🧠 **4. Key Features**
-### ✔ End‑to‑end ETL/ELT pipeline  
-From raw ingestion to analytics‑ready Gold tables.
-
-### ✔ Weather + Fraud enrichment  
-Realistic external data integration.
-
-### ✔ Clean separation of technical vs business logic  
-A hallmark of senior‑level engineering.
-
-### ✔ Data Quality Framework  
-Silver + Gold validation notebooks with logging hooks.
-
-### ✔ Modular folder structure  
-Easy to extend, maintain, and onboard new engineers.
-
-### ✔ CE‑compatible implementation  
-Runs fully on Databricks Community Edition.
-
----
-
-## 🗂 **5. Folder Structure (High‑Level)**
+## 4. Folder structure
 ```
 insurance_claims/
-   raw/
-   bronze/
-   silver/
-   gold/
-   configs/
-   
+├── configs/common/common_config.py   # env, catalog, paths, thresholds, helpers (Auto Loader, dedup, DQ)
+├── setup/00_setup_environment.py     # one-time: schemas, volumes; on Azure also external locations + catalog
+├── bronze/     01–08  Auto Loader ingestion
+├── silver/     11–18 technical · 21–26 business · validation/
+├── gold/       31–34 dims · 41–44 facts · validation/
+├── databricks.yml, resources/        # the pipeline as a job (Asset Bundle) — dev + prod targets
+├── .github/workflows/deploy.yml      # CI/CD to Azure
+└── docs/       AZURE_SETUP.md (Azure build + costs) · CHANGES.md (what changed and why)
 ```
 
-Each folder has its own README for deeper documentation.
+## 5. How to run — dev (Databricks Free Edition)
+1. Clone this repo as a **Git folder** in your workspace.
+2. Run `setup/00_setup_environment` with `env=dev`. Set `workspace_raw_path` to copy your raw files into
+   `/Volumes/workspace/raw/landing/` (sub-folders `cloud_claims/`, `onprem_policy/`, `payments/`, `reference/`, `api_enrichment/`),
+   or upload them through Catalog Explorer. Use `reset=yes` once when upgrading from the old notebooks.
+3. Run the notebooks in number order (bronze → silver → validation → gold → gold DQ), **or** deploy and run the job:
+   ```bash
+   databricks bundle deploy -t dev
+   databricks bundle run    -t dev insurance_claims_pipeline
+   ```
 
----
+## 6. How to run — prod (Azure)
+Follow **[docs/AZURE_SETUP.md](docs/AZURE_SETUP.md)**: resource group, ADLS Gen2, Access Connector, Unity Catalog credential,
+`00_setup_environment` with `env=prod`, `databricks bundle deploy -t prod`, ADF pipeline + trigger. It includes a cost
+estimate and tear-down steps.
 
-## ⚙️ **6. How to Run the Project**
-### Step 1 — Clone or import the repo into Databricks  
-Use the Workspace UI to import the project folder.
+## 7. Gold model
+| Table | Grain |
+|---|---|
+| `fact_claims` | 1 row per claim — loss, claimed/approved/paid totals, delays, weather + fraud flags |
+| `fact_payments` | 1 row per payment |
+| `fact_weather_events` | 1 row per weather event, with number of matching claims |
+| `fact_fraud_scores` | 1 row per scored claim |
+| `dim_claim`, `dim_policy`, `dim_weather`, `dim_date` | 1 row per entity / day |
 
-### Step 2 — Configure paths  
-Update `configs/paths.py` with your CE workspace path.
-
-### Step 3 — Run Bronze ingestion  
-Execute notebooks in numerical order.
-
-### Step 4 — Run Silver technical → business  
-Ensures clean, enriched, conformed data.
-
-### Step 5 — Run Gold modeling  
-Build DIMs and FACTs.
-
-### Step 6 — Run DQ validation  
-Check data quality across layers.
-
----
-
-## 📝 **7. Environment Note (Databricks CE)**
-Production Databricks uses `/mnt/<container>/...` paths.  
-This project runs on **Databricks Community Edition**, so paths use:
-
-```
-/Workspace/Users/<email>/insurance_claims/<layer>/<domain>
-```
-
-Architecture remains identical.
-
----
-
-## 🎯 **8. Purpose of This Project**
-This project is designed to demonstrate:
-
-- Real‑world data engineering skills  
-- BFSI domain understanding  
-- Medallion architecture expertise  
-- Databricks proficiency  
-- End‑to‑end pipeline design  
-- Data quality and governance practices  
+## 8. Purpose
+A portfolio project showing Databricks + Azure data-engineering skills in an insurance (BFSI) context:
+medallion design, incremental ingestion, dimensional modelling, data quality, orchestration-as-code and CI/CD.

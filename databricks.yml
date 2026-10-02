@@ -1,0 +1,115 @@
+# Databricks Asset Bundle: deploy the same code to Free Edition (dev) and Azure Databricks (prod).
+#   databricks bundle validate -t dev
+#   databricks bundle deploy   -t dev      # then: databricks bundle run -t dev insurance_claims_pipeline
+#   databricks bundle deploy   -t prod
+bundle:
+  name: insurance_claims
+
+include:
+  - resources/*.yml
+
+variables:
+  env:
+    description: dev = Free Edition (catalog `workspace`), prod = Azure (catalog `insurance`)
+    default: dev
+
+targets:
+  dev:
+    mode: development          # prefixes job names with [dev <you>] and pauses schedules
+    default: true
+    workspace:
+      host: https://dbc-25681689-0294.cloud.databricks.com     # CHANGE: URL of your Free Edition workspace
+    variables:
+      env: dev
+
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-25681689-0294.cloud.databricks.com          # CHANGE: URL of your Azure Databricks workspace
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      env: prod
+    resources:
+      jobs:
+        insurance_claims_pipeline:
+          # Smallest sensible classic compute: 1 node, 4 vCPU, auto-terminates when the run ends.
+          job_clusters:
+            - job_cluster_key: single_node
+              new_cluster:
+                spark_version: 15.4.x-scala2.12          # LTS runtime
+                node_type_id: Standard_DS3_v2            # 4 vCPU / 14 GB, 0.75 DBU/h
+                num_workers: 0
+                data_security_mode: SINGLE_USER          # required for Unity Catalog
+                spark_conf:
+                  spark.databricks.cluster.profile: singleNode
+                  spark.master: "local[*, 4]"
+                custom_tags:
+                  ResourceClass: SingleNode
+                  project: insurance-claims
+                azure_attributes:
+                  availability: ON_DEMAND_AZURE
+          tasks:
+              - task_key: bronze_policy
+                job_cluster_key: single_node
+              - task_key: bronze_claims_header
+                job_cluster_key: single_node
+              - task_key: bronze_claims_line
+                job_cluster_key: single_node
+              - task_key: bronze_postcode
+                job_cluster_key: single_node
+              - task_key: bronze_product
+                job_cluster_key: single_node
+              - task_key: bronze_payments
+                job_cluster_key: single_node
+              - task_key: bronze_weather
+                job_cluster_key: single_node
+              - task_key: bronze_fraud
+                job_cluster_key: single_node
+              - task_key: silver_tech_claims_header
+                job_cluster_key: single_node
+              - task_key: silver_tech_claims_line
+                job_cluster_key: single_node
+              - task_key: silver_tech_policy
+                job_cluster_key: single_node
+              - task_key: silver_tech_payments
+                job_cluster_key: single_node
+              - task_key: silver_tech_product
+                job_cluster_key: single_node
+              - task_key: silver_tech_postcode
+                job_cluster_key: single_node
+              - task_key: silver_tech_weather
+                job_cluster_key: single_node
+              - task_key: silver_tech_fraud
+                job_cluster_key: single_node
+              - task_key: silver_biz_policy
+                job_cluster_key: single_node
+              - task_key: silver_biz_claims_header
+                job_cluster_key: single_node
+              - task_key: silver_biz_claims_line
+                job_cluster_key: single_node
+              - task_key: silver_biz_payments
+                job_cluster_key: single_node
+              - task_key: silver_biz_weather
+                job_cluster_key: single_node
+              - task_key: silver_biz_fraud
+                job_cluster_key: single_node
+              - task_key: silver_validation
+                job_cluster_key: single_node
+              - task_key: gold_dim_date
+                job_cluster_key: single_node
+              - task_key: gold_dim_claim
+                job_cluster_key: single_node
+              - task_key: gold_dim_policy
+                job_cluster_key: single_node
+              - task_key: gold_dim_weather
+                job_cluster_key: single_node
+              - task_key: gold_fact_claims
+                job_cluster_key: single_node
+              - task_key: gold_fact_payments
+                job_cluster_key: single_node
+              - task_key: gold_fact_weather
+                job_cluster_key: single_node
+              - task_key: gold_fact_fraud
+                job_cluster_key: single_node
+              - task_key: gold_dq
+                job_cluster_key: single_node

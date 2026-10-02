@@ -3,36 +3,29 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver technical — claims line
+# MAGIC **Reads:** `bronze.brz_claim_line_raw` → **Writes:** `silver.slv_claims_line_technical` (1 row per `claim_line_id`)
 
 # COMMAND ----------
 
-# DBTITLE 1,Cell 1
-bronze_line = spark.table(f"{BRONZE_DB}.brz_claim_line_raw")
+# MAGIC %run ../../../configs/common/common_config
+
+# COMMAND ----------
+
+bronze_line = ensure_columns(spark.table(f"{BRONZE_DB}.brz_claim_line_raw"))
 
 silver_line_tech = (
-    bronze_line
-    .withColumn("claim_line_id", F.trim("claim_line_id"))
-    .withColumn("claim_id", F.trim("claim_id"))
-    .withColumn("coverage_code", F.trim("coverage_code"))
-    .withColumn("coverage_desc", F.trim("coverage_desc"))
-    .withColumn("item_type", F.trim("item_type"))
-    .withColumn("line_status", F.trim("line_status"))
-    .withColumn("source_file", F.trim("source_file"))
-    .withColumn("source_system", F.trim("source_system"))
-    .withColumn("claimed_amount", F.col("claimed_amount").cast("double"))
-    .withColumn("approved_amount", F.col("approved_amount").cast("double"))
-    .withColumn("deductible_amount", F.col("deductible_amount").cast("double"))
-    .withColumn("created_ts", F.to_timestamp("created_ts"))
-    .withColumn("updated_ts", F.to_timestamp("updated_ts"))
-    .withColumn("ingestion_ts", F.to_timestamp("ingestion_ts"))
+    trim_all_strings(bronze_line)
+    .withColumn("claimed_amount", to_decimal("claimed_amount"))
+    .withColumn("approved_amount", to_decimal("approved_amount"))
+    .withColumn("deductible_amount", to_decimal("deductible_amount"))
+    .withColumn("created_ts", to_ts_safe("created_ts"))
+    .withColumn("updated_ts", to_ts_safe("updated_ts"))
+    .withColumn("ingestion_ts", to_ts_safe("ingestion_ts"))
     .filter(F.col("claim_line_id").isNotNull())
 )
 
-(
-    silver_line_tech.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable(f"{SILVER_DB}.slv_claims_line_technical")
-)
+silver_line_tech = dedupe_latest(silver_line_tech, ["claim_line_id"])
+
+write_table(silver_line_tech, SILVER_DB, "slv_claims_line_technical")

@@ -3,51 +3,31 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# MAGIC %run "../../../configs/common/common_config"
+# MAGIC %md
+# MAGIC # Silver business — fraud scores
+# MAGIC **Reads:** `slv_fraud_scores_technical`, `slv_claims_header_technical` → **Writes:** `silver.slv_fraud_scores_business`
+# MAGIC
+# MAGIC Thresholds now come from config (`FRAUD_HIGH_THRESHOLD`, `FRAUD_MEDIUM_THRESHOLD`, `FRAUD_SCORE_MAX`).
 
 # COMMAND ----------
 
-from pyspark.sql import functions as F
+# MAGIC %run ../../../configs/common/common_config
 
-fraud = spark.table(f"{SILVER_DB}.slv_fraud_scores_technical")
+# COMMAND ----------
 
-# Drop or rename fraud_flag from claims to avoid duplicates
-claims = (
-    spark.table(f"{SILVER_DB}.slv_claims_header_business_v2")
-    .drop("fraud_flag")   # <— THIS FIXES THE ERROR
+fraud = drop_metadata(spark.table(f"{SILVER_DB}.slv_fraud_scores_technical"))
+claims = spark.table(f"{SILVER_DB}.slv_claims_header_technical").select(
+    "claim_id", "policy_id", "loss_postcode", "incident_date"
 )
 
 fraud_biz = (
-    fraud.alias("f")
-    .join(claims.alias("c"), "claim_id", "left")
-    .select(
-        "f.claim_id",
-        "f.fraud_score",
-        "f.risk_category",
-        "f.flags",
-        "f.source_file",
-        "f.source_system",
-
-        # Derived fields
-        (F.col("fraud_score") >= 60).alias("fraud_flag"),
-        F.when(F.col("fraud_score") >= 60, "High")
-         .when(F.col("fraud_score") >= 30, "Medium")
-         .otherwise("Low")
-         .alias("fraud_severity"),
-        F.concat_ws(", ", "flags").alias("flags_str"),
-
-        # Claim fields
-        "c.policy_id",
-        "c.loss_postcode",
-        "c.incident_date"
-    )
+    fraud.join(claims, "claim_id", "left")
+    .withColumn("fraud_flag", F.col("fraud_score") >= FRAUD_HIGH_THRESHOLD)
+    .withColumn("fraud_severity",
+                F.when(F.col("fraud_score") >= FRAUD_HIGH_THRESHOLD, "High")
+                 .when(F.col("fraud_score") >= FRAUD_MEDIUM_THRESHOLD, "Medium")
+                 .otherwise("Low"))
+    .withColumn("flags_str", F.concat_ws(", ", "flags"))
 )
 
-(
-    fraud_biz.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .saveAsTable(f"{SILVER_DB}.slv_fraud_scores_business_v2")
-)
-
+write_table(fraud_biz, SILVER_DB, "slv_fraud_scores_business")
