@@ -18,7 +18,7 @@ targets:
     mode: development          # prefixes job names with [dev <you>] and pauses schedules
     default: true
     workspace:
-      host: https://<your-free-edition-host>.cloud.databricks.com     # CHANGE: URL of your Free Edition workspace
+      host: https://dbc-25681689-0294.cloud.databricks.com     # CHANGE: URL of your Free Edition workspace
     variables:
       env: dev
 
