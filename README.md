@@ -27,6 +27,15 @@ weather, fraud    ─┘                                           DQ      silve
 Orchestration: one Databricks job with 32 dependent tasks, defined as code in `databricks.yml` (Asset Bundle),
 triggered by ADF on Azure. CI/CD: GitHub Actions deploys the bundle.
 
+**Orchestrated run** — 32 tasks in 10 dependency waves on Databricks serverless:
+![Job run graph](docs/job_run_graph.png)
+
+**Data-quality gate** — gold checks must pass before the run succeeds:
+![Gold DQ output](docs/gold_dq_output.png)
+
+**Lineage** — Unity Catalog lineage for `gold.fact_claims`:
+![Lineage](docs/lineage_fact_claims.png)
+
 ## 2. Business domains
 Claims (header + line) · Policy · Payments · Reference (postcode→region, product) · Weather enrichment · Fraud enrichment.
 
